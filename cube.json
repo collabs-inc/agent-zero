@@ -1,0 +1,8 @@
+{
+  "name": "Agent Zero",
+  "description": "Agent Zero's extensible AI assistant with persistent workspaces, tools and memory in its official container.",
+  "icon": "webui/public/favicon.svg",
+  "platforms": ["linux"],
+  "install": "node cube/install.mjs",
+  "start": "sh cube/run.sh"
+}
