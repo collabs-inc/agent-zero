@@ -21,13 +21,19 @@ async function containerOwner(config, name) {
   try { return (await dockerCommand(config, ['container', 'inspect', '--format', '{{ index .Config.Labels "computer.cube.owner" }}', name])).stdout.trim(); }
   catch (error) { if (/No such (object|container)/i.test(error.stderr || '')) return null; throw error; }
 }
-async function stopOwned(config, owner) {
+async function stopOwned(config, owner, timeout = 15000) {
   const token = await containerOwner(config, owner.name);
-  if (token === null) return;
+  if (token === null) return true;
   if (token !== owner.token) throw new Error('Refusing to stop a container not owned by this app.');
   // Cube escalates HUP -> TERM -> KILL in about 2.25 seconds. Let Docker's
   // server-side stop transaction complete inside that window.
-  await dockerCommand(config, ['stop', '--time', '1', owner.name], { timeout: 1800 });
+  try { await dockerCommand(config, ['stop', '--time', '1', owner.name], { timeout }); }
+  catch (error) {
+    // Docker keeps the server-side stop/remove transaction running after the
+    // CLI deadline. Keep the owner record for recovery on the next launch.
+    if (error.killed) return false;
+    throw error;
+  }
   // --rm normally removes it; an interrupted prior run may already be stopped.
   if (await containerOwner(config, owner.name) !== null) {
     try { await dockerCommand(config, ['rm', '--force', owner.name]); }
@@ -35,6 +41,7 @@ async function stopOwned(config, owner) {
       if (!/removal .*already in progress|No such (object|container)/i.test(error.stderr || '')) throw error;
     }
   }
+  return true;
 }
 function live(pid) { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } }
 
@@ -50,7 +57,7 @@ export async function startContainer({ data = appData(), env = process.env, wait
     const previous = JSON.parse(await readFile(record, 'utf8'));
     if (!Number.isInteger(previous.pid) || !previous.name?.startsWith('cube-agent-zero-') || !previous.token) throw new Error('Invalid Agent Zero ownership record; inspect it before restarting.');
     if (live(previous.pid)) throw new Error('Agent Zero is already supervised by another live process.');
-    await stopOwned(config, previous);
+    if (!await stopOwned(config, previous)) throw new Error('Previous Agent Zero container is still stopping; retry start.');
     await unlink(record);
     await writeFile(record, JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
   }
@@ -63,14 +70,14 @@ export async function startContainer({ data = appData(), env = process.env, wait
     '--env', 'ALLOWED_ORIGINS=https://*.cube.site,http://127.0.0.1:*,http://localhost:*', IMAGE];
   const append = bytes => { try { log(bytes); } catch {} };
   let stopping = false, exited = false, failed, child, created = false;
-  async function stop() {
+  async function stop({ timeout = 1600 } = {}) {
     if (stopping) return;
     stopping = true;
-    await stopOwned(config, owner);
+    const removed = await stopOwned(config, owner, timeout);
     if (!exited) child?.kill('SIGTERM');
     // Late Docker creation can only leave an inert container. Keep its owner
     // record so the next supervisor can reclaim it after this process exits.
-    if (!created) return;
+    if (!created || !removed) return;
     const current = JSON.parse(await readFile(record, 'utf8'));
     if (current.token === owner.token) await unlink(record);
   }

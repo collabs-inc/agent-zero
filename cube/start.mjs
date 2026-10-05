@@ -9,7 +9,7 @@ let app, proxy, stopping = false;
 async function stop(code = 0) {
   if (stopping) return;
   stopping = true; proxy?.close();
-  try { await app?.stop(); }
+  try { await app?.stop({ timeout: warm ? 15000 : 1600 }); }
   catch (error) { console.error(error.message); code = 1; }
   process.exit(code);
 }
