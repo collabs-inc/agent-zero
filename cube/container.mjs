@@ -29,7 +29,12 @@ async function stopOwned(config, owner) {
   // server-side stop transaction complete inside that window.
   await dockerCommand(config, ['stop', '--time', '1', owner.name], { timeout: 1800 });
   // --rm normally removes it; an interrupted prior run may already be stopped.
-  if (await containerOwner(config, owner.name) !== null) await dockerCommand(config, ['rm', '--force', owner.name]);
+  if (await containerOwner(config, owner.name) !== null) {
+    try { await dockerCommand(config, ['rm', '--force', owner.name]); }
+    catch (error) {
+      if (!/removal .*already in progress|No such (object|container)/i.test(error.stderr || '')) throw error;
+    }
+  }
 }
 function live(pid) { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } }
 
