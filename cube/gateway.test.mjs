@@ -2,7 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { gateway } from './gateway.mjs';
+import { gateway, frameSessionCookie } from './gateway.mjs';
+
+test('HTTPS iframe sessions retain authentication attributes in a partition', () => {
+  const original = 'session_example=opaque; HttpOnly; Path=/; SameSite=Lax';
+  assert.equal(frameSessionCookie(original, false), original);
+  assert.equal(frameSessionCookie(original, true), 'session_example=opaque; HttpOnly; Path=/; SameSite=None; Secure; Partitioned');
+  assert.equal(frameSessionCookie('other=value; SameSite=Lax', true), 'other=value; SameSite=Lax');
+});
 
 test('Cube gateway forwards HTTP and WebSockets and rejects foreign origins', async () => {
   const upstream = http.createServer((req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ host: req.headers.host, path: req.url })); });

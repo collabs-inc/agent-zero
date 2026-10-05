@@ -28,6 +28,14 @@ export function allowed(req, websocket = false) {
   return true;
 }
 
+export function frameSessionCookie(cookie, https) {
+  if (!https || !/^session_[^=]+=/.test(cookie)) return cookie;
+  // Cube's web client embeds this HTTPS origin on another site. Keep upstream
+  // session/CSRF validation and HttpOnly, while giving each top-level site its
+  // own browser cookie partition. HTTP desktop gates retain upstream defaults.
+  return cookie.split(';').map(part => part.trim()).filter(part => !/^(?:SameSite=|Secure$|Partitioned$)/i.test(part)).join('; ') + '; SameSite=None; Secure; Partitioned';
+}
+
 export function gateway(innerPort) {
   // Flask/Socket.IO needs the external host alongside Cube's forwarded scheme
   // to compare an HTTPS Origin with its internal HTTP listener correctly.
@@ -39,6 +47,7 @@ export function gateway(innerPort) {
     if (!allowed(req)) { res.writeHead(403); res.end('Forbidden'); return; }
     const proxy = http.request({ host: '127.0.0.1', port: innerPort, method: req.method, path: req.url, headers: headersFor(req) }, upstream => {
       const headers = { ...upstream.headers };
+      if (headers['set-cookie']) headers['set-cookie'] = headers['set-cookie'].map(cookie => frameSessionCookie(cookie, req.headers['x-forwarded-proto'] === 'https'));
       delete headers['access-control-allow-origin'];
       delete headers['access-control-allow-credentials'];
       res.writeHead(upstream.statusCode, headers);
