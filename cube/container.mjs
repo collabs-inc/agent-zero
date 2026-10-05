@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
-import { ensureDocker } from './ensure-docker.mjs';
+import { dockerConfig, dockerReady } from './ensure-docker.mjs';
 import { freePort } from './gateway.mjs';
 import { boundedLog } from './bounded-log.mjs';
 
@@ -25,14 +25,17 @@ async function stopOwned(config, owner) {
   const token = await containerOwner(config, owner.name);
   if (token === null) return;
   if (token !== owner.token) throw new Error('Refusing to stop a container not owned by this app.');
-  await dockerCommand(config, ['stop', '--time', '15', owner.name]);
+  // Cube escalates HUP -> TERM -> KILL in about 2.25 seconds. Let Docker's
+  // server-side stop transaction complete inside that window.
+  await dockerCommand(config, ['stop', '--time', '1', owner.name], { timeout: 1800 });
   // --rm normally removes it; an interrupted prior run may already be stopped.
   if (await containerOwner(config, owner.name) !== null) await dockerCommand(config, ['rm', owner.name]);
 }
 function live(pid) { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } }
 
 export async function startContainer({ data = appData(), env = process.env, waitMs = 45000, onExit = () => {} } = {}) {
-  const config = await ensureDocker({ env });
+  const config = dockerConfig(env);
+  if (!await dockerReady(config)) throw new Error('Rootless Docker is unavailable; restart the app to start it before acquiring the app lock.');
   await mkdir(path.join(data, 'usr'), { recursive: true, mode: 0o700 });
   const record = path.join(data, 'cube-container.json');
   const owner = { pid: process.pid, name: `cube-agent-zero-${randomUUID()}`, token: randomUUID() };
