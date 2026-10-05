@@ -15,7 +15,8 @@ test('Cube gateway forwards HTTP and WebSockets and rejects foreign origins', as
   const upstream = http.createServer((req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ host: req.headers.host, path: req.url })); });
   upstream.on('upgrade', (_req, socket) => { socket.end('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n'); });
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
-  const proxy = gateway(upstream.address().port);
+  let ready = false;
+  const proxy = gateway(upstream.address().port, () => ready);
   proxy.server.listen(0, '127.0.0.1'); await once(proxy.server, 'listening');
   const port = proxy.server.address().port;
   const host = 'app-1234abcd.cube.site';
@@ -29,6 +30,9 @@ test('Cube gateway forwards HTTP and WebSockets and rejects foreign origins', as
     });
   }
   try {
+    assert.equal((await request()).status, 503);
+    assert.match((await request({ headers: { Accept: 'text/html' } })).body, /Starting Agent Zero/);
+    ready = true;
     assert.deepEqual(JSON.parse((await request()).body), { host, path: '/api/example' });
     assert.equal((await request({ method: 'POST', headers: { Origin: `https://${host}` } })).status, 200);
     assert.equal((await request({ method: 'POST', headers: { Origin: 'https://evil.example' } })).status, 403);

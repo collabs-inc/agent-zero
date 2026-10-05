@@ -15,10 +15,15 @@ async function stop(code = 0) {
 }
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => void stop());
 try {
-  app = await startContainer({ waitMs: warm ? 300000 : 45000, onExit: error => { console.error(error.message); void stop(1); } });
+  app = await startContainer({ waitMs: 300000, onExit: error => { console.error(error.message); void stop(1); } });
+  let ready = false;
+  if (!warm) {
+    proxy = gateway(app.innerPort, () => ready);
+    proxy.server.listen(port, '127.0.0.1'); await once(proxy.server, 'listening');
+    console.log('Starting Agent Zero services (up to five minutes on a cold volume)...');
+  }
   await app.ready;
   if (warm) await stop();
-  proxy = gateway(app.innerPort);
-  proxy.server.listen(port, '127.0.0.1'); await once(proxy.server, 'listening');
+  ready = true;
   console.log(`Agent Zero is ready on 127.0.0.1:${port}.`);
 } catch (error) { console.error(error.message); await stop(1); }

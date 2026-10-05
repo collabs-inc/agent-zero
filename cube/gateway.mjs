@@ -1,6 +1,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import { once } from 'node:events';
+import { startupResponse } from './startup.mjs';
 
 export async function freePort() {
   const server = net.createServer().listen(0, '127.0.0.1');
@@ -36,7 +37,7 @@ export function frameSessionCookie(cookie, https) {
   return cookie.split(';').map(part => part.trim()).filter(part => !/^(?:SameSite=|Secure$|Partitioned$)/i.test(part)).join('; ') + '; SameSite=None; Secure; Partitioned';
 }
 
-export function gateway(innerPort) {
+export function gateway(innerPort, ready = () => true) {
   // Flask/Socket.IO needs the external host alongside Cube's forwarded scheme
   // to compare an HTTPS Origin with its internal HTTP listener correctly.
   const headersFor = req => ({ ...req.headers, 'x-forwarded-host': req.headers.host });
@@ -45,6 +46,7 @@ export function gateway(innerPort) {
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
   server.on('request', (req, res) => {
     if (!allowed(req)) { res.writeHead(403); res.end('Forbidden'); return; }
+    if (!ready()) { startupResponse(req, res, 'Agent Zero'); return; }
     const proxy = http.request({ host: '127.0.0.1', port: innerPort, method: req.method, path: req.url, headers: headersFor(req) }, upstream => {
       const headers = { ...upstream.headers };
       if (headers['set-cookie']) headers['set-cookie'] = headers['set-cookie'].map(cookie => frameSessionCookie(cookie, req.headers['x-forwarded-proto'] === 'https'));
@@ -60,6 +62,7 @@ export function gateway(innerPort) {
   });
   server.on('upgrade', (req, socket, head) => {
     if (!allowed(req, true)) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
+    if (!ready()) { socket.end('HTTP/1.1 503 Starting\r\nConnection: close\r\n\r\n'); return; }
     const proxy = http.request({ host: '127.0.0.1', port: innerPort, method: 'GET', path: req.url, headers: headersFor(req) });
     proxy.on('upgrade', (response, remote, remoteHead) => {
       sockets.add(remote); remote.on('close', () => sockets.delete(remote));
