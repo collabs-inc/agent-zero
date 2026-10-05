@@ -13,16 +13,19 @@ import http from 'node:http';import{readFileSync,writeFileSync,unlinkSync,exists
 const args=process.argv.slice(4),root=process.env.CONTAINER_FIXTURE,file=root+'/container.json';
 const get=()=>existsSync(file)?JSON.parse(readFileSync(file)):null;
 if(args[0]==='info'){console.log('29.8.2')}
-else if(args[0]==='run'){
+else if(args[0]==='create'){
  const name=args[args.indexOf('--name')+1],token=args.find(s=>s.startsWith('computer.cube.owner=')).split('=')[1],port=Number(args[args.indexOf('--publish')+1].split(':')[1]);
- writeFileSync(root+'/args.json',JSON.stringify(args));writeFileSync(file,JSON.stringify({pid:process.pid,name,token}));
+ if(process.env.FIXTURE_SLOW_CREATE)await delay(350);
+ writeFileSync(root+'/args.json',JSON.stringify(args));writeFileSync(file,JSON.stringify({name,token,port}));
+}else if(args[0]==='start'){
+ const c=get(),port=c.port;writeFileSync(root+'/started','yes');writeFileSync(file,JSON.stringify({...c,pid:process.pid}));
  const server=http.createServer((req,res)=>{res.writeHead(process.env.FIXTURE_NO_READY?'503':'200',{'Content-Type':'application/json'});res.end(JSON.stringify({ok:true}))}).listen(port,'127.0.0.1');
  process.on('SIGTERM',()=>{unlinkSync(file);server.closeAllConnections();server.close(()=>process.exit(0))});
 }else if(args[0]==='container'&&args[1]==='inspect'){
  const c=get();if(c&&c.name===args.at(-1)){console.log(c.token)}else{console.error('No such container');process.exitCode=1}
 }else if(args[0]==='stop'){
- writeFileSync(root+'/stopped',args.at(-1));const c=get();if(c){process.kill(c.pid,'SIGTERM');for(let i=0;i<100&&get();i++)await delay(10)}
-}else if(args[0]!=='rm'){console.error('Unexpected fake Docker command');process.exitCode=1}
+ writeFileSync(root+'/stopped',args.at(-1));const c=get();if(c?.pid){process.kill(c.pid,'SIGTERM');for(let i=0;i<100&&get();i++)await delay(10)}
+}else if(args[0]==='rm'){if(get())unlinkSync(file)}else{console.error('Unexpected fake Docker command');process.exitCode=1}
 `, { mode: 0o700 });
   return { dir, data: path.join(dir, 'data'), env: { ...process.env, CUBE_DOCKER_HOME: dir, CUBE_DOCKER_BIN: docker, CONTAINER_FIXTURE: dir }, async close() { await rm(dir, { recursive: true, force: true }); } };
 }
@@ -42,6 +45,19 @@ test('container is pinned, loopback-only, persistent and stopped with its owner'
     assert.equal(await readFile(path.join(f.data, 'usr/persisted.txt'), 'utf8'), 'survives');
     await app.stop(); app = null;
     await assert.rejects(access(path.join(f.dir, 'container.json')));
+  } finally { await app?.stop(); await f.close(); }
+});
+
+test('cancellation during slow creation never starts a live container', async () => {
+  const f = await fixture(); let app;
+  try {
+    app = await startContainer({ data: f.data, env: { ...f.env, FIXTURE_SLOW_CREATE: '1' } });
+    const ready = assert.rejects(app.ready, /stopped during startup/i);
+    await app.stop();
+    await ready;
+    await assert.rejects(access(path.join(f.dir, 'started')));
+    assert.equal(JSON.parse(await readFile(path.join(f.dir, 'container.json'))).pid, undefined);
+    await access(path.join(f.data, 'cube-container.json'));
   } finally { await app?.stop(); await f.close(); }
 });
 

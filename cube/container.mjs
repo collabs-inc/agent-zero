@@ -29,7 +29,7 @@ async function stopOwned(config, owner) {
   // server-side stop transaction complete inside that window.
   await dockerCommand(config, ['stop', '--time', '1', owner.name], { timeout: 1800 });
   // --rm normally removes it; an interrupted prior run may already be stopped.
-  if (await containerOwner(config, owner.name) !== null) await dockerCommand(config, ['rm', owner.name]);
+  if (await containerOwner(config, owner.name) !== null) await dockerCommand(config, ['rm', '--force', owner.name]);
 }
 function live(pid) { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } }
 
@@ -51,32 +51,32 @@ export async function startContainer({ data = appData(), env = process.env, wait
   }
   const innerPort = await freePort();
   const log = boundedLog(path.join(data, 'cube-container.log'), 2 * 1024 * 1024);
-  const args = ['run', '--rm', '--pull=never', '--platform=linux/amd64', '--name', owner.name,
+  const args = ['create', '--rm', '--pull=never', '--platform=linux/amd64', '--name', owner.name,
     '--label', 'computer.cube.app=agent-zero', '--label', `computer.cube.owner=${owner.token}`,
     '--publish', `127.0.0.1:${innerPort}:80`, '--mount', `type=bind,src=${path.join(data, 'usr')},dst=/a0/usr`,
     '--log-driver', 'local', '--log-opt', 'max-size=5m', '--log-opt', 'max-file=2',
     '--env', 'ALLOWED_ORIGINS=https://*.cube.site,http://127.0.0.1:*,http://localhost:*', IMAGE];
-  const child = spawn(config.docker, ['--host', config.socket, ...args], { env: config.env, stdio: ['ignore', 'pipe', 'pipe'] });
   const append = bytes => { try { log(bytes); } catch {} };
-  child.stdout.on('data', append); child.stderr.on('data', append);
-  let stopping = false, exited = false, failed;
-  child.on('error', error => { failed = error; exited = true; if (!stopping) onExit(error); });
-  child.on('exit', code => { exited = true; if (!stopping) onExit(new Error(`Agent Zero container exited (${code}).`)); });
+  let stopping = false, exited = false, failed, child, created = false;
   async function stop() {
     if (stopping) return;
     stopping = true;
-    // A Docker process may still be creating the container when startup is
-    // cancelled. Wait for its creation/exit before deciding there is none.
-    for (let attempt = 0; attempt < 20 && !exited; attempt++) {
-      if (await containerOwner(config, owner.name) !== null) break;
-      await delay(100);
-    }
     await stopOwned(config, owner);
-    if (!exited) child.kill('SIGTERM');
+    if (!exited) child?.kill('SIGTERM');
+    // Late Docker creation can only leave an inert container. Keep its owner
+    // record so the next supervisor can reclaim it after this process exits.
+    if (!created) return;
     const current = JSON.parse(await readFile(record, 'utf8'));
     if (current.token === owner.token) await unlink(record);
   }
   const ready = (async () => {
+    await dockerCommand(config, args, { timeout: 45000 });
+    created = true;
+    if (stopping) throw new Error('Agent Zero stopped during startup.');
+    child = spawn(config.docker, ['--host', config.socket, 'start', '--attach', owner.name], { env: config.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', append); child.stderr.on('data', append);
+    child.on('error', error => { failed = error; exited = true; if (!stopping) onExit(error); });
+    child.on('exit', code => { exited = true; if (!stopping) onExit(new Error(`Agent Zero container exited (${code}).`)); });
     const deadline = Date.now() + waitMs;
     while (!exited && Date.now() < deadline) {
       try {
